@@ -19,8 +19,13 @@ at load time, so `src/` runs as-is on Windows and on Linux.
 
 ```sh
 node src/cli.ts setup      # store modem address + credentials, once
-node src/cli.ts discover   # map every endpoint the modem exposes
+node src/cli.ts status     # one snapshot of the link
+node src/cli.ts serve      # live dashboard on http://localhost:8477
 ```
+
+`serve` polls and serves a dashboard in one process. `monitor` does the same
+polling without the web server, and `discover` maps the device's endpoints
+from scratch if you point this at different hardware.
 
 `discover` fingerprints the device, scrapes the management UI's own JavaScript
 for the endpoints it calls, probes a wordlist of PON and optical paths as a
@@ -64,12 +69,44 @@ bypass is applied per request rather than through the process-wide
 address outside RFC 1918, loopback, link-local or CGNAT space, so the relaxed
 verification cannot be pointed at the public internet.
 
+## What it reads
+
+The management UI is a React app that queries a TR-181 data model through a CGI
+bridge. Reading the UI's own JavaScript revealed the interface:
+
+```
+POST /cgi/cgi_action   username=<u>&password=<p>        -> Session-Id cookie
+GET  /cgi/cgi_get?Object=<path>&<Field>=&<Field>=       -> JSON
+POST /cgi/cgi_set      body: Object=<path>&Operation=.. -> JSON
+```
+
+HTTP 444 is this firmware's "no session" status rather than a transport error.
+
+Three firmware quirks are handled explicitly, each of which silently corrupts
+readings otherwise:
+
+- Optical power is reported in thousandths of a dBm, not the 0.1 dBm units
+  TR-181 specifies. The divisor is taken from the device's own UI.
+- `-2147483648` (INT32_MIN) means "no reading", not a value.
+- An object queried alone returns as `Device.DeviceInfo`, but combined with a
+  second query it returns as `Device.DeviceInfo.` with a trailing dot.
+
+## Reading the output during a reboot loop
+
+If the device is restarting repeatedly, treat every counter with suspicion.
+A modem sampled mid-boot reports its optical interface as `NotPresent` with
+zero temperature, voltage and bias current, which is indistinguishable from
+genuinely dead optics. The same device, once it stays up, may report a
+perfectly healthy received level. `classify()` checks reboot behaviour first
+for this reason, and the uptime chart exists to make the pattern obvious.
+
 ## Status
 
-Working: device fingerprinting, endpoint discovery, single-endpoint probing.
+Working: endpoint discovery, authenticated TR-181 queries, sampling to a
+JSON Lines log, health classification, and a live dashboard.
 
-Next: authenticated sessions, optical-power sampling to a time-series log, a
-local dashboard, and threshold alerting.
+Not done: alert delivery (email/webhook), and parsing the device system log
+into the sample stream.
 
 ## Licence
 
