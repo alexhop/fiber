@@ -159,7 +159,7 @@ export function buildSample(ts: string, data: ObjectMap, latencyMs: number, cert
 }
 
 /** Take one sample. Never throws: an unreachable device is itself an observation. */
-export async function takeSample(client: ModemClient, _cfg: Config): Promise<Sample> {
+export async function takeSample(client: ModemClient): Promise<Sample> {
   const ts = new Date().toISOString();
   const started = Date.now();
   try {

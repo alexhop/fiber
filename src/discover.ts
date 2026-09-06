@@ -43,6 +43,18 @@ const WORDLIST: string[] = [
 ];
 
 /**
+ * Paths this tool refuses to request.
+ *
+ * The candidate list is partly harvested from the device's own UI, so it
+ * contains every route the interface knows about -- including the ones that
+ * reboot the box, restore factory defaults, or upgrade firmware. On this
+ * firmware those happen to be inert client-side routes, but that is a property
+ * of one device rather than a guarantee, and a discovery tool aimed at unknown
+ * hardware must not be one GET away from wiping someone's configuration.
+ */
+const NEVER_REQUEST = /reboot|restoredefault|factoryreset|factory_reset|upgrade|firmware|reset|erase|format|delete|logout|shutdown|restart/i;
+
+/**
  * Terms that indicate a response carries optical / PON diagnostics.
  * Weighted: a hit on `rxpower` is far more meaningful than a hit on `status`.
  */
@@ -93,6 +105,10 @@ export interface DiscoveryReport {
   };
   assetsScraped: number;
   candidatesProbed: number;
+  /** True when the device answers 200 with the same page for unknown paths. */
+  catchAll: boolean;
+  /** Candidates refused by the destructive-path filter. */
+  skippedForSafety: string[];
   probes: Probe[];
 }
 
@@ -154,19 +170,31 @@ export function extractUrls(body: string, baseUrl: string): string[] {
   return [...found];
 }
 
-/** Run `tasks` with bounded concurrency; modem web servers are single-threaded and fragile. */
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Run `worker` over `items` with bounded concurrency and a delay between requests.
+ *
+ * The default is one request at a time. That is not excessive caution: three
+ * concurrent requests were enough to wedge this modem's lighttpd during
+ * development, after which it accepted TCP connections but answered nothing
+ * until it restarted. Knocking the device over in the middle of an outage
+ * investigation destroys the evidence you are trying to collect.
+ */
 async function pooled<T, R>(
   items: T[],
   limit: number,
   worker: (item: T, index: number) => Promise<R>,
+  delayMs = 0,
 ): Promise<R[]> {
   const results = new Array<R>(items.length);
   let cursor = 0;
-  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
     for (;;) {
       const i = cursor++;
       if (i >= items.length) return;
       results[i] = await worker(items[i], i);
+      if (delayMs > 0) await sleep(delayMs);
     }
   });
   await Promise.all(runners);
@@ -219,14 +247,23 @@ export interface DiscoverOptions {
   concurrency?: number;
   /** Skip the blind wordlist and only follow the UI's own asset graph. */
   assetsOnly?: boolean;
+  /** Pause between requests, in milliseconds. */
+  delayMs?: number;
   onProgress?: (message: string) => void;
+}
+
+/** A fingerprint of a response body, used to recognise a catch-all page. */
+function bodySignature(body: string): string {
+  return body.length + ':' + body.slice(0, 200).replace(/\s+/g, ' ');
 }
 
 export async function discover(opts: DiscoverOptions): Promise<DiscoveryReport> {
   const { host, onProgress = () => {} } = opts;
   const jar = opts.jar ?? new CookieJar();
   const timeoutMs = opts.timeoutMs ?? 8000;
-  const concurrency = opts.concurrency ?? 3;
+  // Serial by default. See the note on pooled().
+  const concurrency = opts.concurrency ?? 1;
+  const delayMs = opts.delayMs ?? 120;
 
   const report: DiscoveryReport = {
     host,
@@ -235,6 +272,8 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoveryReport> 
     fingerprint: { schemes: [], identityHints: {} },
     assetsScraped: 0,
     candidatesProbed: 0,
+    catchAll: false,
+    skippedForSafety: [],
     probes: [],
   };
 
@@ -282,10 +321,12 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoveryReport> 
   const assetUrls = [...seedUrls].filter((u) => /\.(js|mjs|cjs|json|txt)(\?|$)/i.test(u));
   onProgress('scraping ' + assetUrls.length + ' assets for endpoint strings');
 
-  const assetBodies = await pooled(assetUrls.slice(0, 60), concurrency, async (u) => {
-    const res = await request(u, { jar, timeoutMs, maxBytes: 8 * 1024 * 1024 });
-    return res;
-  });
+  const assetBodies = await pooled(
+    assetUrls.slice(0, 60),
+    concurrency,
+    (u) => request(u, { jar, timeoutMs, maxBytes: 8 * 1024 * 1024 }),
+    delayMs,
+  );
 
   const mined = new Set<string>();
   for (const res of assetBodies) {
@@ -296,25 +337,56 @@ export async function discover(opts: DiscoverOptions): Promise<DiscoveryReport> 
   }
   onProgress('mined ' + mined.size + ' candidate URLs from assets');
 
-  // --- Step 3: assemble the probe set ---------------------------------------
+  // --- Step 3: detect a catch-all before probing anything -------------------
+  // A single-page app typically serves its shell for every unknown path. When
+  // that is happening, a wordlist is worthless: every probe returns an
+  // identical 200 and the only real information is in the JavaScript, which
+  // has already been mined above. Detecting it once costs one request and
+  // saves dozens of pointless hits on a fragile web server.
+  const sentinel = baseUrl + '/zzz-does-not-exist-' + Date.now();
+  const sentinelRes = await request(sentinel, { jar, timeoutMs, followRedirects: 2 });
+  const catchAll = sentinelRes.status === 200 ? bodySignature(sentinelRes.body) : null;
+  if (catchAll) {
+    onProgress('device serves a catch-all page for unknown paths; skipping the wordlist');
+  }
+  report.catchAll = catchAll !== null;
+
+  // --- Step 4: assemble the probe set ---------------------------------------
   const candidates = new Set<string>();
   for (const u of [...seedUrls, ...mined]) {
     // Do not re-fetch the static assets themselves; we want endpoints.
     if (/\.(js|mjs|cjs|css|map)(\?|$)/i.test(u)) continue;
     candidates.add(u);
   }
-  if (!opts.assetsOnly) {
+  if (!opts.assetsOnly && !catchAll) {
     for (const path of WORDLIST) candidates.add(baseUrl + path);
   }
 
-  const list = [...candidates];
+  const skipped: string[] = [];
+  const list = [...candidates].filter((u) => {
+    if (NEVER_REQUEST.test(new URL(u).pathname)) {
+      skipped.push(u);
+      return false;
+    }
+    return true;
+  });
+  report.skippedForSafety = skipped;
+  if (skipped.length) {
+    onProgress('skipping ' + skipped.length + ' paths that look destructive');
+  }
+
   onProgress('probing ' + list.length + ' candidate endpoints');
 
-  const probeResults = await pooled(list, concurrency, async (u, i) => {
-    if (i > 0 && i % 25 === 0) onProgress('  ...' + i + '/' + list.length);
-    const res = await request(u, { jar, timeoutMs, followRedirects: 2 });
-    return toProbe(res);
-  });
+  const probeResults = await pooled(
+    list,
+    concurrency,
+    async (u, i) => {
+      if (i > 0 && i % 25 === 0) onProgress('  ...' + i + '/' + list.length);
+      const res = await request(u, { jar, timeoutMs, followRedirects: 2 });
+      return toProbe(res);
+    },
+    delayMs,
+  );
 
   report.candidatesProbed = list.length;
   report.probes = probeResults
@@ -372,8 +444,30 @@ export function formatReport(report: DiscoveryReport): string {
   out.push('');
   out.push('=== Reachable but unscored (200 OK, no optical keywords) =======');
   const others = report.probes.filter((p) => p.status === 200 && p.score === 0);
-  for (const p of others.slice(0, 30)) {
-    out.push('  ' + String(p.status) + '  ' + p.bytes.toString().padStart(7) + 'B  ' + p.url);
+  // Group by response size: on a single-page app most of these are the same
+  // shell served for every route, and listing each one separately buries the
+  // handful of genuinely distinct responses.
+  const bySize = new Map<number, string[]>();
+  for (const p of others) {
+    const bucket = bySize.get(p.bytes) ?? [];
+    bucket.push(p.url);
+    bySize.set(p.bytes, bucket);
+  }
+  for (const [bytes, urls] of [...bySize].sort((a, b) => b[1].length - a[1].length).slice(0, 12)) {
+    if (urls.length === 1) {
+      out.push('  200  ' + String(bytes).padStart(7) + 'B  ' + urls[0]);
+    } else {
+      out.push('  200  ' + String(bytes).padStart(7) + 'B  ' + urls.length + ' identical responses, e.g. ' + urls[0]);
+    }
+  }
+
+  if (report.skippedForSafety.length) {
+    out.push('');
+    out.push('=== Not requested (look destructive) ===========================');
+    for (const u of report.skippedForSafety.slice(0, 15)) out.push('  ' + u);
+    if (report.skippedForSafety.length > 15) {
+      out.push('  ... and ' + (report.skippedForSafety.length - 15) + ' more');
+    }
   }
 
   const authWalled = report.probes.filter((p) => p.status === 401 || p.status === 403);

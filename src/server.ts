@@ -9,7 +9,7 @@
  * broken exactly when it is needed.
  */
 import http from 'node:http';
-import { readSamples, logPath } from './monitor.ts';
+import { readSamples, logPath, appendSample } from './monitor.ts';
 import { takeSample, classify } from './sample.ts';
 import { ModemClient } from './api.ts';
 import type { Config } from './config.ts';
@@ -405,11 +405,18 @@ export function serve(opts: ServeOptions): http.Server[] {
   if (opts.poll !== false) {
     void (async () => {
       for (;;) {
-        const sample = await takeSample(client, cfg);
-        const verdict = classify(sample, cfg);
-        live = { ...sample, health: verdict.health, reasons: verdict.reasons };
-        const { appendSample } = await import('./monitor.ts');
-        appendSample(sample, verdict);
+        // takeSample never throws, but appending to disk can (a full or
+        // read-only volume). Without this guard the rejection would kill the
+        // polling loop while the web server carried on serving a frozen page,
+        // which is the worst possible failure for a monitoring tool.
+        try {
+          const sample = await takeSample(client);
+          const verdict = classify(sample, cfg);
+          live = { ...sample, health: verdict.health, reasons: verdict.reasons };
+          appendSample(sample, verdict);
+        } catch (e) {
+          console.error('sampling failed: ' + (e as Error).message);
+        }
         await new Promise((r) => setTimeout(r, Math.max(5, cfg.intervalSec) * 1000));
       }
     })();

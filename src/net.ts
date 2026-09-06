@@ -50,7 +50,10 @@ export interface Response {
   statusText: string;
   headers: Record<string, string | string[]>;
   body: string;
+  /** Total bytes the server sent, which exceeds body.length when truncated. */
   bodyBytes: number;
+  /** True when the response was larger than maxBytes and `body` is partial. */
+  truncated: boolean;
   contentType: string;
   elapsedMs: number;
   cert?: CertInfo;
@@ -143,6 +146,7 @@ function errorResponse(url: string, message: string, elapsedMs: number): Respons
     headers: {},
     body: '',
     bodyBytes: 0,
+    truncated: false,
     contentType: '',
     elapsedMs,
     error: message,
@@ -225,6 +229,7 @@ function requestOnce(url: string, opts: RequestOptions): Promise<Response> {
             headers: res.headers as Record<string, string | string[]>,
             body: Buffer.concat(chunks).toString('utf8'),
             bodyBytes: total,
+            truncated,
             contentType: String(res.headers['content-type'] ?? ''),
             elapsedMs: Date.now() - started,
             cert: capturedCert,

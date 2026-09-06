@@ -161,9 +161,16 @@ export class ModemClient {
     return res.body;
   }
 
+  /**
+   * End the session on the device.
+   *
+   * The action goes to cgi_action, not cgi_get. Sending it as
+   * 'cgi_get?Object=Action=Logout' returns 200 and leaves the session fully
+   * valid, which looks like success and is not.
+   */
   async logout(): Promise<void> {
     if (!this.loggedIn) return;
-    await request(this.base + '/cgi/cgi_get?Object=Action=Logout', {
+    await request(this.base + '/cgi/cgi_action?Action=Logout', {
       jar: this.jar,
       headers: this.headers(),
       timeoutMs: this.cfg.timeoutMs,

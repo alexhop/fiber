@@ -29,18 +29,54 @@ export function appendSample(sample: Sample, verdict: Verdict): void {
   fs.appendFileSync(logPath(), line + '\n', 'utf8');
 }
 
-/** Read the log back. Tolerates a truncated final line from an interrupted write. */
+/**
+ * Largest tail we will read when only the most recent samples are wanted.
+ *
+ * A sample is roughly 700 bytes, so this covers several thousand of them. The
+ * dashboard refreshes every few seconds and the log grows without bound over a
+ * long investigation, so reading the whole file on each request would make the
+ * cost of a page view grow with the length of the outage.
+ */
+const TAIL_BYTES = 4 * 1024 * 1024;
+
+/** Read the last `bytes` of a file, discarding a leading partial line. */
+function readTail(file: string, bytes: number): string {
+  const size = fs.statSync(file).size;
+  if (size <= bytes) return fs.readFileSync(file, 'utf8');
+
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(bytes);
+    fs.readSync(fd, buf, 0, bytes, size - bytes);
+    const text = buf.toString('utf8');
+    // The window almost certainly starts mid-record; drop that fragment.
+    const nl = text.indexOf('\n');
+    return nl === -1 ? '' : text.slice(nl + 1);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Read the log back, newest last.
+ *
+ * Tolerates a partial final line from an interrupted write, and a partial
+ * first line when only the tail was read.
+ */
 export function readSamples(limit?: number): Array<Sample & { health?: string; reasons?: string[] }> {
   const file = logPath();
   if (!fs.existsSync(file)) return [];
-  const lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() !== '');
-  const slice = limit ? lines.slice(-limit) : lines;
-  const out = [];
+
+  const text = limit === undefined ? fs.readFileSync(file, 'utf8') : readTail(file, TAIL_BYTES);
+  const lines = text.split('\n').filter((l) => l.trim() !== '');
+  const slice = limit === undefined ? lines : lines.slice(-limit);
+
+  const out: Array<Sample & { health?: string; reasons?: string[] }> = [];
   for (const line of slice) {
     try {
       out.push(JSON.parse(line));
     } catch {
-      // A partially written last line is expected if the process was killed.
+      // Expected for a record truncated by a killed process.
     }
   }
   return out;
@@ -118,7 +154,7 @@ export async function runMonitor(opts: MonitorOptions): Promise<void> {
   console.log('Log: ' + logPath() + '\n');
 
   while (running && (opts.count === undefined || taken < opts.count)) {
-    const sample = await takeSample(client, cfg);
+    const sample = await takeSample(client);
     const verdict = classify(sample, cfg);
 
     appendSample(sample, verdict);

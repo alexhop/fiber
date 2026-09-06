@@ -14,7 +14,7 @@ import { parseArgs, loadConfig, ensureDataDir, DATA_DIR } from './config.ts';
 import { discover, formatReport } from './discover.ts';
 import { request, CookieJar } from './net.ts';
 import { runSetup } from './setup.ts';
-import { runMonitor, formatSample, readSamples } from './monitor.ts';
+import { runMonitor } from './monitor.ts';
 import { takeSample, classify } from './sample.ts';
 import { ModemClient } from './api.ts';
 import { serve } from './server.ts';
@@ -131,8 +131,12 @@ async function cmdProbe(
 async function cmdStatus(flags: Record<string, string | boolean>): Promise<number> {
   const cfg = loadConfig(flags);
   const client = new ModemClient(cfg);
-  const sample = await takeSample(client, cfg);
+  const sample = await takeSample(client);
   const verdict = classify(sample, cfg);
+
+  // One-shot command, so release the session rather than leaving it open on the
+  // device. The long-running commands deliberately keep theirs and reuse it.
+  await client.logout().catch(() => undefined);
 
   if (!sample.reachable) {
     console.error('Could not read the modem: ' + sample.error);
