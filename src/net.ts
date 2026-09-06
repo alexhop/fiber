@@ -15,6 +15,25 @@ import https from 'node:https';
 import { URL } from 'node:url';
 import type { TLSSocket, PeerCertificate } from 'node:tls';
 
+/**
+ * A dedicated agent with the TLS session cache switched off.
+ *
+ * With session resumption enabled, the second and later connections perform an
+ * abbreviated handshake in which the server does not retransmit its certificate,
+ * and getPeerCertificate() returns an empty object. We read the certificate's
+ * validFrom as a proxy for the device's last boot or factory reset, so a stale
+ * or missing certificate would be actively misleading. Forcing a full handshake
+ * each time costs a few milliseconds against a device we poll twice a minute.
+ *
+ * keepAlive is off for the same reason, and because embedded web servers have
+ * very few connection slots.
+ */
+const tlsAgent = new https.Agent({ maxCachedSessions: 0, keepAlive: false });
+const plainAgent = new http.Agent({ keepAlive: false });
+
+/** Last certificate seen per host:port, as a fallback if a handshake is abbreviated anyway. */
+const certMemo = new Map<string, CertInfo>();
+
 export interface CertInfo {
   subject?: Record<string, string>;
   issuer?: Record<string, string>;
@@ -163,6 +182,11 @@ function requestOnce(url: string, opts: RequestOptions): Promise<Response> {
       headers['content-length'] = String(Buffer.byteLength(opts.body));
     }
 
+    // The certificate must be captured during the handshake. Reading it at
+    // response 'end' returns undefined, because `connection: close` means the
+    // socket is already being torn down by then.
+    let capturedCert: CertInfo | undefined;
+
     const transport = secure ? https : http;
     const req = transport.request(
       {
@@ -179,6 +203,7 @@ function requestOnce(url: string, opts: RequestOptions): Promise<Response> {
         // Old firmware negotiates ciphers modern Node refuses by default.
         minVersion: 'TLSv1',
         ciphers: 'DEFAULT:@SECLEVEL=0',
+        agent: secure ? tlsAgent : plainAgent,
       } as https.RequestOptions,
       (res) => {
         const chunks: Buffer[] = [];
@@ -193,8 +218,7 @@ function requestOnce(url: string, opts: RequestOptions): Promise<Response> {
           }
         });
         res.on('end', () => {
-          const socket = req.socket as TLSSocket | undefined;
-          resolve({
+          settle({
             url,
             status: res.statusCode ?? 0,
             statusText: res.statusMessage ?? '',
@@ -203,7 +227,7 @@ function requestOnce(url: string, opts: RequestOptions): Promise<Response> {
             bodyBytes: total,
             contentType: String(res.headers['content-type'] ?? ''),
             elapsedMs: Date.now() - started,
-            cert: secure && socket ? describeCert(socket) : undefined,
+            cert: capturedCert,
           });
         });
         res.on('error', (e: Error) =>
@@ -212,10 +236,52 @@ function requestOnce(url: string, opts: RequestOptions): Promise<Response> {
       },
     );
 
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error('timeout after ' + timeoutMs + 'ms'));
+    req.on('socket', (socket) => {
+      if (!secure) return;
+      const tlsSocket = socket as TLSSocket;
+      const memoKey = parsed.hostname + ':' + (parsed.port || '443');
+      const grab = (where: string) => () => {
+        capturedCert ??= describeCert(tlsSocket);
+        if (capturedCert) certMemo.set(memoKey, capturedCert);
+        if (process.env.FIBER_DEBUG) {
+          console.error(
+            '[net] ' + where + ' ' + url +
+            ' encrypted=' + Boolean((tlsSocket as { encrypted?: boolean }).encrypted) +
+            ' authorized=' + String(tlsSocket.authorized) +
+            ' cert=' + (capturedCert ? 'yes' : 'no'),
+          );
+        }
+      };
+      // 'secureConnect' fires on a fresh handshake; an agent-reused socket is
+      // already connected, so read it immediately in that case.
+      grab('on-socket')();
+      tlsSocket.once('secureConnect', () => {
+        grab('secure-connect')();
+        // If the handshake was abbreviated anyway, fall back to the last
+        // certificate this host presented rather than reporting none.
+        capturedCert ??= certMemo.get(memoKey);
+      });
     });
-    req.on('error', (e: Error) => resolve(errorResponse(url, e.message, Date.now() - started)));
+
+    // Own the deadline explicitly with a wall-clock timer rather than relying on
+    // req.setTimeout, whose 'timeout' event can also be raised by the agent or
+    // socket layer -- which previously produced errors reporting the configured
+    // timeout while firing at a completely different time.
+    const deadline = setTimeout(() => {
+      req.destroy(new Error('timed out after ' + (Date.now() - started) + 'ms (limit ' + timeoutMs + 'ms)'));
+    }, timeoutMs);
+    // Do not hold the event loop open on the timer alone.
+    if (typeof deadline.unref === 'function') deadline.unref();
+
+    const settle = (res: Response): void => {
+      clearTimeout(deadline);
+      resolve(res);
+    };
+
+    req.on('close', () => clearTimeout(deadline));
+    req.on('error', (e: Error) =>
+      settle(errorResponse(url, e.message, Date.now() - started)),
+    );
     if (opts.body !== undefined) req.write(opts.body);
     req.end();
   });

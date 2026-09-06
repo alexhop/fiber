@@ -14,6 +14,9 @@ import { parseArgs, loadConfig, ensureDataDir, DATA_DIR } from './config.ts';
 import { discover, formatReport } from './discover.ts';
 import { request, CookieJar } from './net.ts';
 import { runSetup } from './setup.ts';
+import { runMonitor, formatSample, readSamples } from './monitor.ts';
+import { takeSample, classify } from './sample.ts';
+import { ModemClient } from './api.ts';
 
 const USAGE = `
 fiber-monitor -- direct diagnostics for a Quantum Fiber / GPON ONT
@@ -25,6 +28,8 @@ Commands
                     in fiber.config.json (gitignored, owner-readable only).
   discover          Fingerprint the modem and map every endpoint it exposes.
                     Writes a full JSON report to data/ and prints a summary.
+  status            Log in and print one snapshot of the fibre link.
+  monitor           Poll continuously, appending to data/samples.jsonl.
   probe <path>      Fetch one path and print status, headers and body.
   help              This message.
 
@@ -33,6 +38,8 @@ Options
   --user <name>     Admin username             (or env FIBER_USER)
   --pass <secret>   Admin password             (or env FIBER_PASS)
   --timeout <ms>    Per-request timeout        (default 8000)
+  --interval <sec>  monitor: seconds between samples   (default 30)
+  --count <n>       monitor: stop after n samples
   --assets-only     Skip the blind wordlist; only follow the UI's asset graph
   --raw             probe: print the entire body, not a preview
 
@@ -116,6 +123,53 @@ async function cmdProbe(
   return res.status >= 200 && res.status < 400 ? 0 : 1;
 }
 
+async function cmdStatus(flags: Record<string, string | boolean>): Promise<number> {
+  const cfg = loadConfig(flags);
+  const client = new ModemClient(cfg);
+  const sample = await takeSample(client, cfg);
+  const verdict = classify(sample, cfg);
+
+  if (!sample.reachable) {
+    console.error('Could not read the modem: ' + sample.error);
+    return 1;
+  }
+
+  const rows: Array<[string, string]> = [
+    ['optical status', sample.opticalStatus ?? '--'],
+    ['rx power', sample.rxDbm === null ? 'no reading' : sample.rxDbm.toFixed(2) + ' dBm'],
+    ['tx power', sample.txDbm === null ? 'no reading' : sample.txDbm.toFixed(2) + ' dBm'],
+    ['transceiver', sample.transceiverVendor ?? 'not reporting'],
+    ['temperature', sample.temperature === null ? '--' : sample.temperature + ' C'],
+    ['bias current', sample.biasCurrent === null ? '--' : String(sample.biasCurrent)],
+    ['OLT vendor', sample.oltVendor ?? 'not reached'],
+    ['FSAN / PON id', sample.fsan ?? '--'],
+    ['line status', sample.lineStatus ?? '--'],
+    ['link uptime', sample.linkUpTimeSec === null ? '--' : String(sample.linkUpTimeSec) + 's'],
+    ['conn failures 24h', String(sample.connectionFailures24h ?? '--')],
+    ['device uptime', sample.uptimeSec === null ? '--' : String(sample.uptimeSec) + 's'],
+    ['reboots 24h', String(sample.rebootCount24h ?? '--')],
+    ['reboots 7d', String(sample.rebootCount7d ?? '--')],
+    ['query latency', String(sample.latencyMs) + ' ms'],
+  ];
+  for (const [k, v] of rows) console.log('  ' + k.padEnd(20) + v);
+
+  console.log('');
+  console.log('  health: ' + verdict.health);
+  for (const r of verdict.reasons) console.log('    - ' + r);
+  return 0;
+}
+
+async function cmdMonitor(flags: Record<string, string | boolean>): Promise<number> {
+  const cfg = loadConfig(flags);
+  const count = typeof flags.count === 'string' ? Number(flags.count) : undefined;
+  if (count !== undefined && (!Number.isFinite(count) || count < 1)) {
+    console.error('--count must be a positive integer');
+    return 2;
+  }
+  await runMonitor({ cfg, count });
+  return 0;
+}
+
 async function main(): Promise<void> {
   const { command, flags, rest } = parseArgs(process.argv.slice(2));
 
@@ -124,6 +178,12 @@ async function main(): Promise<void> {
     switch (command) {
       case 'setup':
         code = await runSetup();
+        break;
+      case 'status':
+        code = await cmdStatus(flags);
+        break;
+      case 'monitor':
+        code = await cmdMonitor(flags);
         break;
       case 'discover':
         code = await cmdDiscover(flags);
