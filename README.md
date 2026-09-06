@@ -12,8 +12,16 @@ blinking blue means the device is "trying to sync with the network" — which is
 another way of saying *something is wrong and we are not going to tell you
 what*. Power-cycling it and waiting half an hour changed nothing. The fibre
 running to the house had no visible damage. Support was, to put it politely,
-not much help: the script is reboot it, wait, and schedule a technician for
-some time later in the week.
+not much help: the script is reboot it, wait, and book an engineer.
+
+The earliest appointment was **ten days out**.
+
+Ten days without a connection is an inconvenience if the internet is a
+luxury. It is something else entirely if you work from home. There was a
+backup link to fall back on, which took the edge off, but the position was
+still absurd: a service that was one hundred per cent down, an appointment
+a week and a half away, and not one piece of information about what was
+actually broken — or whether the visit would even be the right kind of visit.
 
 That leaves you with a blinking light and no information, which is a
 frustrating place to be when the answer is sitting inside the box.
@@ -66,6 +74,19 @@ to a Calix E7 OLT.
 
 The fibre was fine the whole time. The box was crashing.
 
+That is the useful answer, and it arrived in an evening rather than in ten
+days. Not a cut in the ground, not a dirty connector, not a dark port at the
+exchange — the ONT itself, restarting on its own thirty-eight times in
+twenty-four hours with zero power-loss and zero watchdog resets to explain it.
+The fix is a replacement unit and a re-provision onto the new PON serial, which
+is a very different job from digging up a driveway, and a much easier one to
+argue for when you can hand over the numbers.
+
+Whether that actually shortens a ten-day wait is up to the operator. But
+"please replace my SmartNID, here is its reboot log and its optical power" is a
+far better opening than "my light is blinking", and it at least removes the
+risk of an engineer arriving to test a line that was never the problem.
+
 Two lessons are baked into the tool as a result. **Read the reboot counters
 before you trust anything else** — a device that restarts every few minutes
 resets all of its own statistics, so every other number looks reassuringly
@@ -96,6 +117,7 @@ command exists to re-map the API if yours differs.
 - [Security](#security)
 - [What is not in this repository](#what-is-not-in-this-repository)
 - [Troubleshooting](#troubleshooting)
+- [Related projects](#related-projects)
 - [Licence](#licence)
 
 ## Requirements
@@ -512,6 +534,69 @@ placeholder FSAN for the same reason.
 | Requests time out, but ping and TCP connect succeed | The modem's web server is wedged. Stop polling and give it a few minutes. |
 | `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` | Node is too old, or code used non-erasable TypeScript syntax. |
 | Optical fields all null or zero | Probably sampled during boot. Check `uptimeSec` before concluding anything. |
+
+## Related projects
+
+This is not the only tool that reads optical power off consumer fibre gear, and
+depending on what you want, one of these may suit you better.
+
+**The closest overlap** is
+[Ozark-Connect/NetworkOptimizer](https://github.com/Ozark-Connect/NetworkOptimizer),
+a self-hosted monitoring and audit suite for UniFi networks. It lists the
+Q1000K SmartNID by name and polls RX/TX optical power, temperature, voltage and
+bias current from the ONT directly, charting them in InfluxDB alongside
+everything else on the network. If you already run UniFi and want fibre
+readings folded into a single pane of glass with history, look there first. It
+is .NET and Blazor, expects a UniFi Console, and brings a time-series database
+with it — which is exactly right for continuous operations and rather more than
+you want to stand up at 9pm on the night your connection died.
+
+Others, by category:
+
+- **SFP/SFP+ DOM on your own machine** —
+  [aleksander0m/fiberstat](https://github.com/aleksander0m/fiberstat) reads
+  RX/TX levels from optical modules in local interfaces. Useful if the fibre
+  terminates in your own hardware rather than an operator-supplied ONT.
+- **ONT sticks** — [Strykar/GPON](https://github.com/Strykar/GPON) pulls
+  DDM-grade telemetry from HSGQ/ODI GPON SFP ONUs over SSH into Prometheus and
+  Grafana. Relevant if you have replaced the operator's box with a module.
+- **Same technique, different device** —
+  [mcbyte-it/fiberhome_exporter](https://github.com/mcbyte-it/fiberhome_exporter)
+  is a Prometheus exporter for the FiberHome HG6145F that logs into the web UI
+  and reads its JSON API. The approach here is the same; only the firmware
+  differs.
+- **Reverse-engineering ONT firmware** —
+  [Anime4000/RTL960x](https://github.com/Anime4000/RTL960x) and the
+  [hack-gpon](https://github.com/hack-gpon/hack-gpon.github.io) documentation
+  project are the places to go for getting inside the hardware itself.
+- **Cable modems** — [tc4400_exporter](https://github.com/markuslindenberg/tc4400_exporter),
+  [hitron_coda_exporter](https://github.com/hairyhenderson/hitron_coda_exporter)
+  and similar apply the same scrape-the-admin-page pattern to DOCSIS.
+- **Outage evidence without device telemetry** —
+  [FutureSolutionDev/internet-monitor](https://github.com/FutureSolutionDev/internet-monitor)
+  and [gitbls/internet-monitor](https://github.com/gitbls/internet-monitor)
+  record connectivity loss with timestamps for ISP tickets. They tell you
+  *that* you were down, not *why*.
+- **Operator side** — [bartekkois/GPONMonitor](https://github.com/bartekkois/GPONMonitor)
+  monitors Dasan OLTs. That is the other end of the fibre, and needs access
+  most subscribers do not have.
+
+### Where this one differs
+
+- **No infrastructure.** No database, no container, no controller, no
+  dependencies at all. `git clone` and run it on the laptop you just cabled to
+  the modem, on Windows or Linux, while the internet is completely down.
+- **Fault attribution, not just metrics.** Most of these graph optical power.
+  Power was never the problem in the case that produced this tool — the line
+  was healthy throughout. The useful signals were the reboot counters, the
+  reboot *reason*, and the device system log, which are what separate a bad
+  fibre from a bad ONT.
+- **It maps unknown firmware.** `discover` derives the API from the device's
+  own UI rather than hard-coding endpoints, which is what made supporting this
+  box possible in the first place.
+- **The API is written down.** As far as I can tell the Q1000K's CGI/TR-181
+  interface is not documented publicly anywhere; the section above is an
+  attempt to fix that whether or not you use this code.
 
 ## Licence
 
