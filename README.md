@@ -3,14 +3,80 @@
 Diagnostics and optical-power monitoring for a Quantum Fiber ONT, talking
 directly to the device on your LAN instead of through any vendor cloud service.
 
-Built for the situation where the link is down or flapping, the ISP can't tell
-you why, and you need evidence: connect a machine straight to the modem, find
-out what the box actually reports, and log it over time so an intermittent
-fault leaves a trace you can hand to support.
+## Why this exists
+
+The internet went down at 4pm on a Tuesday and stayed down.
+
+The SmartNID on the wall had a blinking blue light. The support page says
+blinking blue means the device is "trying to sync with the network" — which is
+another way of saying *something is wrong and we are not going to tell you
+what*. Power-cycling it and waiting half an hour changed nothing. The fibre
+running to the house had no visible damage. Support was, to put it politely,
+not much help: the script is reboot it, wait, and schedule a technician for
+some time later in the week.
+
+That leaves you with a blinking light and no information, which is a
+frustrating place to be when the answer is sitting inside the box.
+
+Because it is. The ONT knows exactly how much light it is receiving, whether it
+has reached the operator's OLT, how many times it has rebooted today and why.
+It measures all of this continuously. It just doesn't show you, and the person
+on the phone reading a script doesn't either.
+
+So: plug a laptop straight into the modem, and go and ask it.
+
+It turns out you can find out a great deal more than is obvious. This tool is
+what came out of that — a way to get the numbers off the box, watch them over
+time, and work out **which part is actually broken**.
+
+## What it can tell apart
+
+That last part is the point. "The internet is down" has several very different
+causes that look identical from the outside, and they need completely different
+responses:
+
+| The real problem | What the data looks like | What you do about it |
+| --- | --- | --- |
+| **The fibre itself** — a cut, a bend, a dirty connector, a dark port at the exchange | No light at all, or received power below about −28 dBm. No OLT ever seen. | A technician has to come out. Now you can say so with a number. |
+| **The ONT's firmware or CPU** | Healthy light, OLT visible, but the box keeps restarting itself, or reports `Global Software Reset`, or the link never holds | Replacement hardware. No truck roll needed for the line. |
+| **The optical module inside the ONT** | Transceiver reports no vendor, no model, no temperature, no voltage, no bias current | The ONT can't talk to its own optics. Replacement. |
+| **Provisioning or the operator's side** | Good light, OLT reached, session established, then dropped — or never authorised at all | An account or configuration problem. No amount of rebooting fixes it. |
+| **Everything downstream of the ONT** | ONT healthy and stable throughout | The fault is in your own router, cabling or Wi-Fi. |
+
+Walking into a support call with *"my ONT is receiving −19.7 dBm from a Calix
+OLT, so the line is fine, but it has logged 38 `Global Software Reset` events
+in the last 24 hours"* is a categorically different conversation from *"my
+light is blinking."* The first one is very hard to deflect.
+
+## How it turned out, in that first case
+
+Worth recording, because it is a good illustration of how the data can mislead
+you if you read it in the wrong order.
+
+The first readings looked like dead hardware. The optical interface reported
+`NotPresent`. Received power: nothing. Transmitted power: `INT32_MIN`.
+Transceiver temperature, voltage and bias current all zero. Every sign of an
+optical module that had failed outright.
+
+That was wrong. The modem was restarting every few minutes, and every sample
+had landed in a boot window before the PON subsystem had finished initialising.
+Once it stayed up long enough to be caught in a good moment, the same fields
+read **−19.71 dBm received**, 2.61 dBm transmitted, 53 °C, and a healthy link
+to a Calix E7 OLT.
+
+The fibre was fine the whole time. The box was crashing.
+
+Two lessons are baked into the tool as a result. **Read the reboot counters
+before you trust anything else** — a device that restarts every few minutes
+resets all of its own statistics, so every other number looks reassuringly
+fresh while the service is entirely down. And **take more than one sample**,
+which is what the monitoring mode is for.
+
+---
 
 Developed against a **Quantum Fiber Q1000K SmartNID** (Adtran / Axon Networks,
 firmware `QKX002-06.01.25.00`). It should work on related CenturyLink,
-Brightspeed and Lumen CPE that share the same management UI, and the `discover`
+Brightspeed and Lumen CPE sharing the same management UI, and the `discover`
 command exists to re-map the API if yours differs.
 
 ## Contents
@@ -46,8 +112,10 @@ properties.
 
 ## Quick start
 
-You need to be on the modem's network. Plug an Ethernet cable from your machine
-into one of the modem's LAN ports; it will hand you an address on `192.168.0.x`.
+You need to be on the modem's own network. Run an Ethernet cable from your
+machine into one of the modem's LAN ports; it will hand you an address on
+`192.168.0.x`. This works even when the internet is completely down, which is
+rather the point.
 
 ```sh
 node src/cli.ts setup      # store modem address + credentials, once
@@ -58,6 +126,9 @@ node src/cli.ts serve      # live dashboard on http://localhost:8477
 The admin password is on the sticker on the device, labelled `Admin Password`
 (not the Wi-Fi password). `setup` prompts for it with the input masked and
 writes `fiber.config.json`, which is gitignored and created mode `0600`.
+
+If the link is intermittent, leave `serve` running. A single reading during a
+flap tells you very little; a night of them tells you almost everything.
 
 ## Commands
 
@@ -75,6 +146,12 @@ writes `fiber.config.json`, which is gitignored and created mode `0600`.
 JavaScript, probes a wordlist of PON and optical paths as a backstop, and ranks
 what it finds by how much optical-diagnostic content each response contains.
 The full result is written to `data/discovery-<timestamp>.json`.
+
+It is deliberately cautious: strictly one request at a time with a delay, it
+detects a catch-all page before wasting probes on a wordlist, and it refuses to
+request any path that looks destructive — reboot, restore-defaults,
+firmware-upgrade and similar — because the candidate list is harvested from the
+device's own UI and therefore names every route the device knows.
 
 ## Options
 
@@ -158,8 +235,7 @@ network.
 
 Every sample is appended to `data/samples.jsonl` as one JSON object per line.
 Append-only and self-describing, so it is greppable, resumable after a crash,
-and readable by anything. A truncated final line from an interrupted write is
-tolerated on read.
+and readable by anything.
 
 ```json
 {
@@ -168,7 +244,7 @@ tolerated on read.
   "latencyMs": 26,
   "uptimeSec": 1502,
   "rebootCount24h": 38,
-  "opticalStatus": "NotPresent",
+  "opticalStatus": "Up",
   "rxDbm": -19.829,
   "txDbm": 2.864,
   "temperature": 53,
@@ -202,9 +278,8 @@ Selected fields:
 `classify()` in `src/sample.ts` grades each sample `ok`, `warn`, `critical` or
 `unknown`, and returns a reason for every rule that fired.
 
-Reboot behaviour is checked **first**, deliberately. A device that restarts
-every few minutes zeroes its own statistics, so every other counter reads as
-reassuringly fresh while the service is entirely down.
+Reboot behaviour is checked **first**, deliberately, for the reason described
+at the top of this file.
 
 Roughly:
 
@@ -223,17 +298,21 @@ over I²C and do not depend on incoming photons.
 
 ## The device API
 
+None of this is documented publicly, so it had to be recovered.
+
 The management UI is a React single-page app that queries a TR-181 data model
-through a CGI bridge. The interface was recovered by reading the UI's own
-JavaScript rather than by guessing: the app is code-split, and the entry bundle
-embeds the complete webpack chunk manifest, so all of the post-login code can be
-fetched and read without authenticating.
+through a CGI bridge. Guessing endpoints got nowhere — every path returned the
+same 347-byte application shell. What worked was reading the UI's own
+JavaScript: the app is code-split, and the entry bundle embeds the complete
+webpack chunk manifest, so all 170 chunks of post-login code can be fetched and
+read **without authenticating**. A single-page app has to name every URL it
+calls, which makes its bundles a far better source of truth than any wordlist.
 
 ```text
 POST /cgi/cgi_action   body: username=<u>&password=<p>          -> Session-Id cookie
 GET  /cgi/cgi_get?Object=<path>&<Field>=&<Field>=               -> JSON
 POST /cgi/cgi_set      body: Object=<path>&Operation=Modify&..  -> JSON
-POST /cgi/cgi_action   body: Action=Logout
+GET  /cgi/cgi_action?Action=Logout
 ```
 
 Notes:
@@ -245,6 +324,8 @@ Notes:
 - Several queries can be combined by joining them with commas.
 - `cgi_set` is a POST carrying the query string as the **body**. Sending the
   same thing as a GET query returns 404.
+- Logout must go to `cgi_action`. Sending it to `cgi_get` returns 200 and
+  leaves the session completely valid.
 - **HTTP 444 means "no valid session"**, not a transport error. The client
   re-authenticates once and retries.
 
@@ -265,10 +346,11 @@ test.
 
 ## Firmware quirks
 
-Three of these will silently corrupt readings if you do not handle them.
+Each of these will silently corrupt readings if you do not handle it.
 
 - **Optical power is in thousandths of a dBm**, not the 0.1 dBm units TR-181
   specifies. The divisor here is taken from the device's own UI, not the spec.
+  Using the documented one would put every reading out by a factor of 100.
 - **`-2147483648` (INT32_MIN) means "no reading"**, not a value. Dividing it
   by 1000 would print `-2147483.6 dBm`. A reported `0` is also a sentinel; 0 dBm
   is not a physically plausible level on a PON.
@@ -276,13 +358,16 @@ Three of these will silently corrupt readings if you do not handle them.
   `Device.DeviceInfo`; combined with a second query in the same request it
   returns as `Device.DeviceInfo.` with a trailing dot. Names are normalised to
   a canonical trailing-dot form before lookup.
+- **`Status` is not always truthful.** This firmware has reported `NotPresent`
+  while simultaneously returning a healthy received level, a real transceiver
+  temperature and a reachable OLT. Corroborate it against the power readings.
 - **Field filters matter.** An unfiltered `Object=Device.DeviceInfo` drags back
   every child object including 269 logger entries. Adding filters took a poll
   from 323 ms to 24 ms.
 - **The web server is fragile.** Embedded lighttpd with very few connection
-  slots; three concurrent requests wedged it during development, after which it
-  accepted TCP connections but answered nothing until it restarted. All
-  requests here are strictly serial, with backoff on failure.
+  slots. Three concurrent requests were enough to wedge it during development,
+  after which it accepted TCP connections but answered nothing until it
+  restarted. Everything here is strictly serial with backoff.
 
 ## Interpreting readings
 
@@ -291,12 +376,7 @@ Three of these will silently corrupt readings if you do not handle them.
 If the device is restarting repeatedly, treat every other counter with
 suspicion. A modem sampled mid-boot reports its optical interface as
 `NotPresent` with zero temperature, voltage and bias current — indistinguishable
-from genuinely dead optics. The same device, once it stays up, may report a
-perfectly healthy received level.
-
-This is not hypothetical; it produced a confidently wrong diagnosis during
-development. `classify()` checks restarts first and the uptime chart exists
-specifically to make the pattern visible.
+from genuinely dead optics.
 
 ### Received optical power
 
@@ -310,14 +390,15 @@ For GPON class B+, roughly:
 
 Light with no session is a different fault from no light at all. Good rx power
 plus `linkUpTimeSec: 0` points at ranging, OMCI or provisioning, not at the
-glass.
+glass. A handheld optical power meter measures only the first of these; the ONT
+tells you both, for free.
 
 ### PON generation
 
-The WAN log line reports the negotiated rates. `downlink:2488000
-uplink:1244000` is 2.488G/1.244G, which is **GPON**. XGS-PON would be roughly
-9.95G symmetric. This matters if you are considering a third-party SFP+ ONT
-stick, since the common WAS-110 class modules are XGS-PON only.
+The WAN log reports the negotiated rates. `downlink:2488000 uplink:1244000` is
+2.488G/1.244G, which is **GPON**. XGS-PON would be roughly 9.95G symmetric.
+This matters if you are considering a third-party SFP+ ONT stick, since the
+common WAS-110 class modules are XGS-PON only and would be the wrong hardware.
 
 ### Reboot reason
 
@@ -331,10 +412,15 @@ distinction is the diagnosis:
 | `GlobalSoftwareResetCount` | The firmware chose to restart itself. |
 | `FactoryResetCount` | Configuration was wiped. |
 
+A box with zero power-on and zero watchdog resets but dozens of software resets
+is not suffering a power problem or a hung CPU. It is deciding to restart, over
+and over, which is a firmware fault and an argument for replacement hardware.
+
 ### Enabling the device system log
 
-The system log ships disabled and shows WAN state transitions with timestamps,
-which is what you want when chasing a flap. To turn it on with save-on-reboot:
+The system log ships disabled and records WAN state transitions with
+timestamps, which is exactly what you want when chasing a flap. To turn it on
+with save-on-reboot:
 
 ```text
 POST /cgi/cgi_set
@@ -343,9 +429,13 @@ Object=Device.X_AXON_Systemlog&Operation=Modify&Enable=1
 ```
 
 Both are needed; setting `State` alone leaves `Enable` at `0` and the log stays
-empty. Read it back with `Object=SystemLog`. Note the response shape differs
-from other objects. This writes a setting to the modem's flash and is
-reversible from the UI under Utilities.
+empty. Read it back with `Object=SystemLog`; the response shape differs from
+other objects. This writes a setting to the modem's flash and is reversible
+from the UI under Utilities.
+
+The log is worth the trouble. It is what showed the WAN reaching `Status
+Connected` with a real public address and full line rates, then dropping again
+about a minute later — proof the line worked and the box did not.
 
 ## Running unattended
 
@@ -409,14 +499,15 @@ reason.
 That matters more than usual here. Sample logs and discovery reports contain
 the ONT serial and WAN MAC, and on a PON network the serial **is** the
 subscriber identity the OLT authenticates against. It is not a password, but it
-does not belong in a public repository.
+does not belong in a public repository. The example values above use a
+placeholder FSAN for the same reason.
 
 ## Troubleshooting
 
 | Symptom | Cause |
 | --- | --- |
 | Dashboard unreachable at `localhost` but fine at `127.0.0.1` | An older build bound IPv4 only. Current code binds both loopback families. |
-| `Login rejected (status 200)` | Wrong password. Use the `Admin Password` from the device label, not the Wi-Fi key. |
+| `Login rejected` | Wrong password. Use the `Admin Password` from the device label, not the Wi-Fi key. |
 | Every query returns 444 | The session was not established. Check credentials; the client retries once automatically. |
 | Requests time out, but ping and TCP connect succeed | The modem's web server is wedged. Stop polling and give it a few minutes. |
 | `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` | Node is too old, or code used non-erasable TypeScript syntax. |
