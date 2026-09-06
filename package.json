@@ -5,10 +5,13 @@
   "description": "Direct diagnostics and optical-power monitoring for a Quantum Fiber ONT",
   "type": "module",
   "engines": {
-    "node": ">=22.6.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "setup": "node src/cli.ts setup",
+    "status": "node src/cli.ts status",
+    "serve": "node src/cli.ts serve",
+    "monitor": "node src/cli.ts monitor",
     "discover": "node src/cli.ts discover",
     "probe": "node src/cli.ts probe"
   },

@@ -308,7 +308,25 @@ export interface ServeOptions {
   poll?: boolean;
 }
 
-export function serve(opts: ServeOptions): http.Server {
+/**
+ * Addresses to listen on for a given --bind value.
+ *
+ * Loopback needs both families. On Windows, `localhost` normally resolves to
+ * ::1 before 127.0.0.1, so a server bound only to the IPv4 address is
+ * unreachable from a browser typing http://localhost:<port> even though curl
+ * to 127.0.0.1 works. Binding 0.0.0.0 would paper over that by exposing the
+ * page to the whole network, which is the wrong trade for a page showing
+ * modem telemetry, so we open one listener per loopback address instead.
+ */
+function bindAddresses(bind: string): string[] {
+  if (bind === '127.0.0.1' || bind === 'localhost' || bind === '::1') {
+    return ['127.0.0.1', '::1'];
+  }
+  if (bind === '0.0.0.0' || bind === '::') return [bind];
+  return [bind];
+}
+
+export function serve(opts: ServeOptions): http.Server[] {
   const { cfg } = opts;
   const bind = opts.bind ?? '127.0.0.1';
 
@@ -317,7 +335,7 @@ export function serve(opts: ServeOptions): http.Server {
   const client = new ModemClient(cfg);
   let live: Record<string, unknown> | null = null;
 
-  const server = http.createServer((req, res) => {
+  const handler = (req: http.IncomingMessage, res: http.ServerResponse): void => {
     const url = new URL(req.url ?? '/', 'http://localhost');
 
     if (url.pathname === '/api/state') {
@@ -345,15 +363,44 @@ export function serve(opts: ServeOptions): http.Server {
 
     res.writeHead(404, { 'content-type': 'text/plain' });
     res.end('not found\n');
-  });
+  };
 
-  server.listen(cfg.port, bind, () => {
-    console.log('Dashboard: http://' + (bind === '0.0.0.0' ? 'localhost' : bind) + ':' + cfg.port);
-    if (bind === '0.0.0.0') {
-      console.log('Listening on all interfaces. The page exposes modem telemetry, so');
-      console.log('only do this on a network you trust.');
-    }
-  });
+  const servers: http.Server[] = [];
+  const addresses = bindAddresses(bind);
+  let announced = false;
+
+  for (const address of addresses) {
+    const server = http.createServer(handler);
+
+    // A machine with IPv6 disabled will refuse the ::1 listener. That is not a
+    // failure worth aborting on when the IPv4 listener is already serving.
+    server.on('error', (e: NodeJS.ErrnoException) => {
+      if (addresses.length > 1 && (e.code === 'EADDRNOTAVAIL' || e.code === 'EAFNOSUPPORT')) {
+        return;
+      }
+      if (e.code === 'EADDRINUSE') {
+        console.error(
+          'Port ' + cfg.port + ' is already in use on ' + address + '. ' +
+          'Another copy may be running; use --port to pick a different one.',
+        );
+        process.exit(1);
+      }
+      console.error('Listen failed on ' + address + ': ' + e.message);
+    });
+
+    server.listen(cfg.port, address, () => {
+      if (!announced) {
+        announced = true;
+        const shown = addresses.includes('127.0.0.1') ? 'localhost' : address;
+        console.log('Dashboard: http://' + shown + ':' + cfg.port);
+        if (bind === '0.0.0.0' || bind === '::') {
+          console.log('Listening on all interfaces. The page exposes modem telemetry,');
+          console.log('so only do this on a network you trust.');
+        }
+      }
+    });
+    servers.push(server);
+  }
 
   if (opts.poll !== false) {
     void (async () => {
@@ -368,5 +415,5 @@ export function serve(opts: ServeOptions): http.Server {
     })();
   }
 
-  return server;
+  return servers;
 }
