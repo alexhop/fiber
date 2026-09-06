@@ -37,6 +37,15 @@ It turns out you can find out a great deal more than is obvious. This tool is
 what came out of that — a way to get the numbers off the box, watch them over
 time, and work out **which part is actually broken**.
 
+None of this is new ground. People have been scraping diagnostics out of
+consumer modems for as long as consumer modems have had web interfaces, and
+there are several good projects doing exactly that, listed under
+[Related projects](#related-projects) below — including one that already
+supports this specific device. This was written because I had a problem at
+9pm on a weeknight and wanted a very small thing that would run right then, on
+the laptop I had just plugged into the modem. If one of those others fits your
+situation better, use it.
+
 ## What it can tell apart
 
 That last part is the point. "The internet is down" has several very different
@@ -118,6 +127,7 @@ command exists to re-map the API if yours differs.
 - [What is not in this repository](#what-is-not-in-this-repository)
 - [Troubleshooting](#troubleshooting)
 - [Related projects](#related-projects)
+- [Acknowledgements](#acknowledgements)
 - [Licence](#licence)
 
 ## Requirements
@@ -320,7 +330,9 @@ over I²C and do not depend on incoming photons.
 
 ## The device API
 
-None of this is documented publicly, so it had to be recovered.
+I could not find this interface documented publicly, so it had to be worked out
+from the device. If there is a better reference somewhere, I would rather point
+at it than at this.
 
 The management UI is a React single-page app that queries a TR-181 data model
 through a CGI bridge. Guessing endpoints got nowhere — every path returned the
@@ -537,8 +549,9 @@ placeholder FSAN for the same reason.
 
 ## Related projects
 
-This is not the only tool that reads optical power off consumer fibre gear, and
-depending on what you want, one of these may suit you better.
+Plenty of people have solved parts of this already, and several of these are
+more capable than this one. Depending on what you need, start here rather than
+with this.
 
 **The closest overlap** is
 [Ozark-Connect/NetworkOptimizer](https://github.com/Ozark-Connect/NetworkOptimizer),
@@ -581,22 +594,50 @@ Others, by category:
   monitors Dasan OLTs. That is the other end of the fibre, and needs access
   most subscribers do not have.
 
-### Where this one differs
+### Why this one exists anyway
 
-- **No infrastructure.** No database, no container, no controller, no
-  dependencies at all. `git clone` and run it on the laptop you just cabled to
-  the modem, on Windows or Linux, while the internet is completely down.
-- **Fault attribution, not just metrics.** Most of these graph optical power.
-  Power was never the problem in the case that produced this tool — the line
-  was healthy throughout. The useful signals were the reboot counters, the
-  reboot *reason*, and the device system log, which are what separate a bad
-  fibre from a bad ONT.
-- **It maps unknown firmware.** `discover` derives the API from the device's
-  own UI rather than hard-coding endpoints, which is what made supporting this
-  box possible in the first place.
-- **The API is written down.** As far as I can tell the Q1000K's CGI/TR-181
-  interface is not documented publicly anywhere; the section above is an
-  attempt to fix that whether or not you use this code.
+Not because the others are lacking. Mostly because of when and how it was
+needed:
+
+- **It had to run immediately, with nothing else installed.** No database, no
+  container, no controller, no dependencies. That is a constraint born of the
+  situation rather than a design philosophy, and it is the main reason this
+  is a separate thing rather than a patch to something better.
+- **What mattered turned out not to be optical power.** Most tools in this
+  space graph light levels, sensibly, because that is usually the fault. Here
+  the line was healthy the whole time and the answer was in the reboot
+  counters, the reboot *reason*, and the device log. So the health rules are
+  built around distinguishing causes rather than charting one number.
+- **The device's API had to be worked out from scratch.** `discover` derives
+  endpoints from the UI's own JavaScript instead of hard-coding them, which is
+  what made this box supportable at all.
+
+If the CGI/TR-181 details in this README are useful to any of the projects
+below, please take them — I could not find this interface documented publicly,
+and I would genuinely rather it lived somewhere more established than here. If
+it *is* already documented somewhere, tell me and I will link to it instead.
+
+## Acknowledgements
+
+The approach here is not original, and several projects and communities made it
+much easier:
+
+- **[Ozark-Connect/NetworkOptimizer](https://github.com/Ozark-Connect/NetworkOptimizer)**
+  for demonstrating that the Q1000K's optical fields are reachable at all, and
+  for covering this device properly inside a real monitoring system.
+- **[hack-gpon](https://github.com/hack-gpon/hack-gpon.github.io)** and
+  **[Anime4000/RTL960x](https://github.com/Anime4000/RTL960x)**, whose
+  documentation of ONT internals, PON identity attributes and vendor quirks is
+  the reference material for this entire area.
+- **[mcbyte-it/fiberhome_exporter](https://github.com/mcbyte-it/fiberhome_exporter)**,
+  **[markuslindenberg/tc4400_exporter](https://github.com/markuslindenberg/tc4400_exporter)**
+  and **[hairyhenderson/hitron_coda_exporter](https://github.com/hairyhenderson/hitron_coda_exporter)**
+  for the log-in-and-read-the-admin-API pattern that this follows.
+- **[aleksander0m/fiberstat](https://github.com/aleksander0m/fiberstat)** and
+  **[Strykar/GPON](https://github.com/Strykar/GPON)** for showing what good
+  optical telemetry looks like when you own the module.
+- The Broadband Forum's TR-181 data model, which is why an unfamiliar device
+  could be interrogated with standard object paths at all.
 
 ## Licence
 
