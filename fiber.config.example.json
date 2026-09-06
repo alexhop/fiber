@@ -1,0 +1,15 @@
+{
+  "_comment": "Copy to fiber.config.json (gitignored) or run: node src/cli.ts setup",
+
+  "host": "192.168.0.1",
+  "username": "admin",
+  "password": "",
+
+  "intervalSec": 30,
+  "port": 8477,
+  "timeoutMs": 8000,
+
+  "_thresholds": "Received optical power in dBm. GPON receivers are typically specified to about -27 dBm; below -28 a link is marginal and will flap.",
+  "warnRxDbm": -25,
+  "critRxDbm": -28
+}

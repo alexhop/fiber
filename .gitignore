@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- fiber-monitor ---------------------------------------------------------
+# Local credentials and device-specific settings. Never commit.
+fiber.config.json
+fiber.config.local.json
+
+# Captured device data. Discovery reports and sample logs contain the ONT
+# serial number and WAN MAC -- on a PON network the serial is the subscriber
+# identity the OLT authenticates against, so this stays out of a public repo.
+data/
+*.jsonl
+discovery-*.json

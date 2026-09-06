@@ -1,0 +1,20 @@
+{
+  "name": "fiber-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Direct diagnostics and optical-power monitoring for a Quantum Fiber ONT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "setup": "node src/cli.ts setup",
+    "discover": "node src/cli.ts discover",
+    "probe": "node src/cli.ts probe"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexhop/fiber.git"
+  }
+}

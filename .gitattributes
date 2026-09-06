@@ -1,0 +1,5 @@
+# Normalise line endings so the same checkout behaves identically on the
+# Windows workstation and the Linux NUC.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
