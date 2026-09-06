@@ -17,6 +17,7 @@ import { runSetup } from './setup.ts';
 import { runMonitor, formatSample, readSamples } from './monitor.ts';
 import { takeSample, classify } from './sample.ts';
 import { ModemClient } from './api.ts';
+import { serve } from './server.ts';
 
 const USAGE = `
 fiber-monitor -- direct diagnostics for a Quantum Fiber / GPON ONT
@@ -30,6 +31,7 @@ Commands
                     Writes a full JSON report to data/ and prints a summary.
   status            Log in and print one snapshot of the fibre link.
   monitor           Poll continuously, appending to data/samples.jsonl.
+  serve             Poll and serve a live dashboard on http://localhost:8477.
   probe <path>      Fetch one path and print status, headers and body.
   help              This message.
 
@@ -40,6 +42,9 @@ Options
   --timeout <ms>    Per-request timeout        (default 8000)
   --interval <sec>  monitor: seconds between samples   (default 30)
   --count <n>       monitor: stop after n samples
+  --port <n>        serve: dashboard port              (default 8477)
+  --bind <addr>     serve: interface to listen on      (default 127.0.0.1)
+  --no-poll         serve: display the existing log without contacting the modem
   --assets-only     Skip the blind wordlist; only follow the UI's asset graph
   --raw             probe: print the entire body, not a preview
 
@@ -170,6 +175,15 @@ async function cmdMonitor(flags: Record<string, string | boolean>): Promise<numb
   return 0;
 }
 
+async function cmdServe(flags: Record<string, string | boolean>): Promise<number> {
+  const cfg = loadConfig(flags);
+  const bind = typeof flags.bind === 'string' ? flags.bind : '127.0.0.1';
+  serve({ cfg, bind, poll: flags['no-poll'] !== true });
+  // Hold the process open; the server and its polling loop own the event loop.
+  await new Promise<void>(() => {});
+  return 0;
+}
+
 async function main(): Promise<void> {
   const { command, flags, rest } = parseArgs(process.argv.slice(2));
 
@@ -184,6 +198,9 @@ async function main(): Promise<void> {
         break;
       case 'monitor':
         code = await cmdMonitor(flags);
+        break;
+      case 'serve':
+        code = await cmdServe(flags);
         break;
       case 'discover':
         code = await cmdDiscover(flags);

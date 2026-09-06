@@ -127,6 +127,40 @@ export class ModemClient {
     return parseCgiResponse(res.body);
   }
 
+  /**
+   * Write a setting through the CGI bridge.
+   *
+   * `query` is a raw, already-encoded query string, e.g.
+   *   'Object=Device.X_AXON_Systemlog&Operation=Modify&State=Enabled%2dSave'
+   * It is passed through untouched because the firmware expects specific
+   * percent-encoding (%2d for the hyphen) that re-encoding would corrupt.
+   *
+   * Unlike cgi_get, this is a POST carrying the query string as the body;
+   * sending it as a GET query returns 404.
+   */
+  async cgiSet(query: string, retry = true): Promise<string> {
+    if (!this.loggedIn) await this.login();
+
+    const res = await request(this.base + '/cgi/cgi_set', {
+      jar: this.jar,
+      method: 'POST',
+      headers: this.headers({ 'Content-Type': 'application/x-www-form-urlencoded' }),
+      body: query,
+      // Writes commit to flash and are markedly slower than reads.
+      timeoutMs: Math.max(this.cfg.timeoutMs, 30000),
+    });
+
+    if (res.status === 444) {
+      this.loggedIn = false;
+      if (!retry) throw new AuthError('Session rejected (444) after re-login.');
+      await this.login();
+      return this.cgiSet(query, false);
+    }
+    if (res.error) throw new Error('Set failed: ' + res.error);
+    if (res.status !== 200) throw new Error('Set returned HTTP ' + res.status);
+    return res.body;
+  }
+
   async logout(): Promise<void> {
     if (!this.loggedIn) return;
     await request(this.base + '/cgi/cgi_get?Object=Action=Logout', {
