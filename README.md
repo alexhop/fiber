@@ -113,6 +113,7 @@ command exists to re-map the API if yours differs.
 
 - [Requirements](#requirements)
 - [Quick start](#quick-start)
+- [Keeping the diagnostic link off the internet](#keeping-the-diagnostic-link-off-the-internet)
 - [Commands](#commands)
 - [Options](#options)
 - [Configuration](#configuration)
@@ -161,6 +162,52 @@ writes `fiber.config.json`, which is gitignored and created mode `0600`.
 
 If the link is intermittent, leave `serve` running. A single reading during a
 flap tells you very little; a night of them tells you almost everything.
+
+## Keeping the diagnostic link off the internet
+
+Cabling a machine into the ONT gives the operating system a second path to the
+internet, and it may well prefer it. On the machine this was developed on,
+Windows gave the Ethernet adapter an interface metric of 25 against the Wi-Fi
+adapter's 30, so general traffic and DNS were both routed through the modem
+under investigation — an unwanted path, and an intermittent one given that the
+modem was rebooting every few minutes.
+
+Raising the interface metric is not enough on its own. It only deprioritises
+the route; the default gateway still exists and Windows can still select it,
+for instance when the preferred adapter briefly drops. The fix is to remove the
+gateway from that adapter entirely, leaving only the on-link route to the
+modem's subnet.
+
+`scripts/Set-ModemNic.ps1` does this. Run it from an **elevated** PowerShell:
+
+```powershell
+cd D:\source\fiber\scripts
+.\Set-ModemNic.ps1
+```
+
+It saves the current configuration to `nic-backup-<adapter>.json`, then
+switches the adapter to a static address with **no default gateway and no DNS
+servers**, sets a high interface metric as a second line of defence, and takes
+the connection out of DNS registration. It finishes by checking that the modem
+is still reachable and that internet traffic now resolves to a different
+adapter.
+
+To undo it:
+
+```powershell
+.\Set-ModemNic.ps1 -Revert
+```
+
+Two things worth knowing:
+
+- The default static address is `192.168.0.250`. The modem's DHCP pool usually
+  spans the whole subnet, so any static address technically overlaps it; these
+  servers allocate from the bottom of the range, which makes a high address the
+  safer pick once this machine stops renewing a lease. Override with
+  `-IPAddress` if your subnet differs.
+- Because the adapter becomes static, it will not work on a different network
+  until you run `-Revert`. If you move the machine around, prefer reverting
+  first.
 
 ## Commands
 
