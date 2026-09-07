@@ -228,3 +228,4 @@ fiber.config.local.json
 data/
 *.jsonl
 discovery-*.json
+scripts/nic-backup-*.json
